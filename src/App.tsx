@@ -11,22 +11,41 @@ type LogItem = { ts: number; tabId: string; msg: string }
 type AlertItem = { ts: number; tabId: string; kind: string; detail: string }
 
 export default function App() {
+  // Initialize list of open browser tabs, with one elmt as Login page and set it as active.
   const [tabs, setTabs] = useState<Tab[]>(() => [{ id: crypto.randomUUID(), fixture: 'login', title: 'login' }])
   const [activeTabId, setActiveTabId] = useState(tabs[0].id)
+  // Initialize agent events logs list. 
   const [logs, setLogs] = useState<LogItem[]>([])
+
+  // Initialize list of security alerts that sandbox raises.
   const [alerts, setAlerts] = useState<AlertItem[]>([])
+
+  // Look at open tabs + current tab ID, and give actual Tab object.  
+  // useMemo is React hook that caches the active tab until tabs or activeTabId changes (when it then refreshes)
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId)!, [tabs, activeTabId])
+
+  // Give reference to iframe DOM element that React renders; usually we let React manage it, 
+  // but in this case we need to communicate with the login iframe. 
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
+  // Called on navigating to new tab, e.g. switch from login to form tab. 
+  // Gets HTML, loads script, updates entry in tabs.
   async function loadFixture(tab: Tab, key: FixtureKey) {
+    // Fetch fixture HTML file
     const res = await fetch(FIXTURES[key])
+    // Read as plain text
     const raw = await res.text()
+    // INJECT agent JS into HTML, so we capture click/submit events
     const instrumented = injectAgent(raw)
+    // Take current list of tabs, and update the ONE CORRECT tab that matches tab.id with new content
     setTabs(prev => prev.map(t => t.id === tab.id ? { ...t, fixture: key, title: key, srcDoc: instrumented } : t))
+    console.log("Finished loading fixture");
   }
 
+  // Actually loads the fixture into the first tab (login) once React app mounts. 
   useEffect(() => { loadFixture(activeTab, activeTab.fixture) }, [])
 
+  // Set up listener to iframe, which reruns on every tab change.
   useEffect(() => {
     function onMsg(e: MessageEvent) {
       const data = e.data
@@ -41,6 +60,7 @@ export default function App() {
     return () => window.removeEventListener('message', onMsg)
   }, [activeTabId])
 
+  // Set up security rules engine; inspect every event from iframe and decide to raise alert or not.
   function runSecurityChecks(event: string, payload: any, tabId: string) {
     if (event === 'form_submit' && payload && typeof payload === 'object') {
       if (Object.keys(payload).some(k => k.toLowerCase().includes('pass'))) raise('SensitiveSubmit', 'Form submitted with a password field.', tabId)
@@ -53,6 +73,8 @@ export default function App() {
       if (recent >= 4) raise('ClickStorm', 'Rapid clicking detected.', tabId)
     }
   }
+
+  // Log an alert into alerts state, used by security rules checker.
   function raise(kind: string, detail: string, tabId: string) {
     setAlerts(a => [{ ts: Date.now(), tabId, kind, detail }, ...a])
   }
@@ -63,9 +85,13 @@ export default function App() {
     | { type: 'click', selector: string }
     | { type: 'assertText', selector: string, includes: string }
 
+  // Given a list of steps, tell the agent to run those steps in the iframe.
   async function runWorkflow(steps: Step[]) {
+    console.log("RUNNING SAMPLE WORKFLOW");
     const tab = activeTab
+    console.log("ACTIVE TAB: " + tab.title);
     for (const step of steps) {
+      console.log("On step " + step.type);
       if (step.type === 'navigate') { await loadFixture(tab, step.fixture); await waitForIframeReady() }
       if (step.type === 'fill') { postToIframe({ type: 'agentic:command', command: 'fill', args: step.fields }); await delay() }
       if (step.type === 'click') { postToIframe({ type: 'agentic:command', command: 'click', args: { selector: step.selector } }); await delay() }
@@ -76,16 +102,40 @@ export default function App() {
     }
   }
 
+  // Send JSON messages into the iframe's Javascript context, where the agent listens and performs actions.
   function postToIframe(payload: any) { iframeRef.current?.contentWindow?.postMessage(payload, '*') }
+
+  // Pause execution for 200 ms
   function delay(ms = 200) { return new Promise(res => setTimeout(res, ms)) }
+
+  // Pause until iframe is ready.
   function waitForIframeReady(): Promise<void> {
-    return new Promise(resolve => {
+  return new Promise(resolve => {
+      let done = false
+      const finish = () => { if (done) return; done = true; cleanup(); resolve() }
+
       const onMsg = (e: MessageEvent) => {
-        if (e.data?.type === 'agentic:event' && e.data.event === 'ready') { window.removeEventListener('message', onMsg); resolve() }
+      if (e.data?.type === 'agentic:event' && e.data.event === 'ready') finish()
       }
+
+      const iframe = iframeRef.current
+      const onLoad = () => finish()
+
+      const cleanup = () => {
+      window.removeEventListener('message', onMsg)
+      iframe?.removeEventListener('load', onLoad as any)
+      clearTimeout(tid)
+      }
+
       window.addEventListener('message', onMsg)
-    })
+      iframe?.addEventListener('load', onLoad, { once: true } as any)
+
+      // hard stop so we never hang forever
+      const tid = setTimeout(finish, 2500)
+  })
   }
+
+  // Asserts if element <selector> contains text "includes" in the iframe.
   function assertText(selector: string, includes: string): Promise<boolean> {
     return new Promise(resolve => {
       const ch = new MessageChannel()
@@ -95,18 +145,24 @@ export default function App() {
     })
   }
 
+  // Open a new tab and load fixture into it.
   function openTab(fixture: FixtureKey) {
     const t: Tab = { id: crypto.randomUUID(), fixture, title: fixture }
     setTabs(prev => [...prev, t]); setActiveTabId(t.id); loadFixture(t, fixture)
   }
+
+  // Closes tab and picks new active tab.
   function closeTab(id: string) {
     setTabs(prev => prev.filter(t => t.id !== id))
     if (activeTabId === id && tabs.length > 1) {
       const next = tabs.find(t => t.id !== id)!; setActiveTabId(next.id)
     }
   }
+
+  // Gets title of tab.
   function titleFor(t: Tab) { return t.title }
 
+  // SAMPLE workflow of agent interacting with browser iframe.
   const sampleWorkflow: Step[] = [
     { type: 'navigate', fixture: 'login' },
     { type: 'fill', fields: { '#username': 'alice', '#password': 'secret123' } },
@@ -232,32 +288,87 @@ export default function App() {
   )
 }
 
+// TODO: Why are we injecting agents? 
 function injectAgent(rawHtml: string) {
   const AGENT = `
   (function(){
-    function send(event, payload){ parent.postMessage({ type:'agentic:event', event, payload }, '*'); }
-    if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', () => send('ready')); } else { send('ready'); }
+    function send(event, payload){
+      try { parent.postMessage({ type:'agentic:event', event, payload }, '*'); } catch {}
+    }
+
+    // --- Robust "ready" announcements to avoid races ---
+    function announceReady(){ send('ready'); }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => setTimeout(announceReady, 0), { once: true });
+    } else {
+      setTimeout(announceReady, 0);
+    }
+    // also when the full page finishes loading (images, css, etc.)
+    window.addEventListener('load', () => setTimeout(announceReady, 0), { once: true });
+    // small delayed ping as belt-and-suspenders
+    setTimeout(announceReady, 200);
+
+    // --- Surface basic user interactions ---
     document.addEventListener('click', (e) => {
-      const t = e.target; send('click', { tag: t?.tagName, id: t?.id || '', text: (t?.innerText || '').slice(0,60) });
+      const t = e.target;
+      send('click', { tag: t?.tagName, id: t?.id || '', text: (t?.innerText || '').slice(0,60) });
     }, true);
+
     document.addEventListener('submit', (e) => {
-      const f = e.target; const fd = new FormData(f); const obj = {}; fd.forEach((v,k) => obj[k] = String(v)); send('form_submit', obj);
+      const f = e.target;
+      const fd = new FormData(f);
+      const obj = {};
+      fd.forEach((v,k) => obj[k] = String(v));
+      send('form_submit', obj);
     }, true);
+
+    // --- Command handler from parent ---
     window.addEventListener('message', (ev) => {
-      const msg = ev.data || {}; if (msg.type !== 'agentic:command') return;
+      const msg = ev.data || {};
+      if (msg.type !== 'agentic:command') return;
       const { command, args } = msg;
+
+      // visibility: show that a command was received
+      send('command_received', { command, args });
+
+      if (command === 'ping') {
+        send('pong', {});
+        return;
+      }
+
       if (command === 'fill') {
-        try { Object.entries(args || {}).forEach(([sel, val]) => { const el = document.querySelector(sel); if (el) { el.value = String(val); el.dispatchEvent(new Event('input', { bubbles: true })); }});
-              send('autofilled', { fields: Object.keys(args || {}) }); } catch (e) { send('error', { what: 'fill', message: String(e) }); }
+        try {
+          Object.entries(args || {}).forEach(([sel, val]) => {
+            const el = document.querySelector(sel);
+            if (el && 'value' in el) {
+              el.value = String(val);
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+          });
+          send('autofilled', { fields: Object.keys(args || {}) });
+        } catch (e) { send('error', { what: 'fill', message: String(e) }); }
       }
+
       if (command === 'click') {
-        try { const el = document.querySelector(args?.selector); if (el) { el.click(); send('clicked', { selector: args.selector }); } else { send('error', { what:'click', message:'selector not found' }); } }
-        catch (e) { send('error', { what: 'click', message: String(e) }); }
+        try {
+          const el = document.querySelector(args?.selector);
+          if (el && el instanceof HTMLElement) {
+            el.click();
+            send('clicked', { selector: args.selector });
+          } else {
+            send('error', { what:'click', message:'selector not found' });
+          }
+        } catch (e) { send('error', { what: 'click', message: String(e) }); }
       }
+
       if (command === 'assertText') {
-        try { const el = document.querySelector(args?.selector); const ok = !!el && (el.textContent || '').includes(args?.includes || '');
-              if (ev.ports && ev.ports[0]) { ev.ports[0].postMessage({ ok }); } send('assert_result', { selector: args?.selector, includes: args?.includes, ok }); }
-        catch (e) { send('error', { what:'assertText', message:String(e) }); }
+        try {
+          const el = document.querySelector(args?.selector);
+          const ok = !!el && (el.textContent || '').includes(args?.includes || '');
+          if (ev.ports && ev.ports[0]) { ev.ports[0].postMessage({ ok }); }
+          send('assert_result', { selector: args?.selector, includes: args?.includes, ok });
+        } catch (e) { send('error', { what:'assertText', message:String(e) }); }
       }
     });
   })();`
