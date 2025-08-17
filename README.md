@@ -1,5 +1,7 @@
 # AgenticWebsite
 
+![AgenticWebsite Screenshot](src/assets/app_screenshot.png)
+
 A sandbox app simulating a Chromium-style browser that is also integrated with a web agent that can:
 - Open/close tabs
 - Navigate between tabs
