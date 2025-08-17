@@ -39,7 +39,6 @@ export default function App() {
     const instrumented = injectAgent(raw)
     // Take current list of tabs, and update the ONE CORRECT tab that matches tab.id with new content
     setTabs(prev => prev.map(t => t.id === tab.id ? { ...t, fixture: key, title: key, srcDoc: instrumented } : t))
-    console.log("Finished loading fixture");
   }
 
   // Actually loads the fixture into the first tab (login) once React app mounts. 
@@ -89,9 +88,7 @@ export default function App() {
   async function runWorkflow(steps: Step[]) {
     console.log("RUNNING SAMPLE WORKFLOW");
     const tab = activeTab
-    console.log("ACTIVE TAB: " + tab.title);
     for (const step of steps) {
-      console.log("On step " + step.type);
       if (step.type === 'navigate') { await loadFixture(tab, step.fixture); await waitForIframeReady() }
       if (step.type === 'fill') { postToIframe({ type: 'agentic:command', command: 'fill', args: step.fields }); await delay() }
       if (step.type === 'click') { postToIframe({ type: 'agentic:command', command: 'click', args: { selector: step.selector } }); await delay() }
