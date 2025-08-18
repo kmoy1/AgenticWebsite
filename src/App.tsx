@@ -1,14 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-
-type Tab = { id: string; fixture: FixtureKey; title: string; srcDoc?: string }
-type FixtureKey = 'login' | 'search' | 'form'
-const FIXTURES: Record<FixtureKey, string> = {
-  login: '/fixtures/login.html',
-  search: '/fixtures/search.html',
-  form: '/fixtures/form.html',
-}
-type LogItem = { ts: number; tabId: string; msg: string }
-type AlertItem = { ts: number; tabId: string; kind: string; detail: string }
+import type { Tab, FixtureKey, LogItem, AlertItem, Step } from './types'
+import { FIXTURES, injectAgent } from './fixtures'
 
 export default function App() {
   // Initialize list of open browser tabs, with one elmt as Login page and set it as active.
@@ -78,11 +70,11 @@ export default function App() {
     setAlerts(a => [{ ts: Date.now(), tabId, kind, detail }, ...a])
   }
 
-  type Step =
-    | { type: 'navigate', fixture: FixtureKey }
-    | { type: 'fill', fields: Record<string, string> }
-    | { type: 'click', selector: string }
-    | { type: 'assertText', selector: string, includes: string }
+//   type Step =
+//     | { type: 'navigate', fixture: FixtureKey }
+//     | { type: 'fill', fields: Record<string, string> }
+//     | { type: 'click', selector: string }
+//     | { type: 'assertText', selector: string, includes: string }
 
   // Given a list of steps, tell the agent to run those steps in the iframe.
   async function runWorkflow(steps: Step[]) {
@@ -283,92 +275,4 @@ export default function App() {
       </main>
     </div>
   )
-}
-
-// TODO: Why are we injecting agents? 
-function injectAgent(rawHtml: string) {
-  const AGENT = `
-  (function(){
-    function send(event, payload){
-      try { parent.postMessage({ type:'agentic:event', event, payload }, '*'); } catch {}
-    }
-
-    // --- Robust "ready" announcements to avoid races ---
-    function announceReady(){ send('ready'); }
-
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => setTimeout(announceReady, 0), { once: true });
-    } else {
-      setTimeout(announceReady, 0);
-    }
-    // also when the full page finishes loading (images, css, etc.)
-    window.addEventListener('load', () => setTimeout(announceReady, 0), { once: true });
-    // small delayed ping as belt-and-suspenders
-    setTimeout(announceReady, 200);
-
-    // --- Surface basic user interactions ---
-    document.addEventListener('click', (e) => {
-      const t = e.target;
-      send('click', { tag: t?.tagName, id: t?.id || '', text: (t?.innerText || '').slice(0,60) });
-    }, true);
-
-    document.addEventListener('submit', (e) => {
-      const f = e.target;
-      const fd = new FormData(f);
-      const obj = {};
-      fd.forEach((v,k) => obj[k] = String(v));
-      send('form_submit', obj);
-    }, true);
-
-    // --- Command handler from parent ---
-    window.addEventListener('message', (ev) => {
-      const msg = ev.data || {};
-      if (msg.type !== 'agentic:command') return;
-      const { command, args } = msg;
-
-      // visibility: show that a command was received
-      send('command_received', { command, args });
-
-      if (command === 'ping') {
-        send('pong', {});
-        return;
-      }
-
-      if (command === 'fill') {
-        try {
-          Object.entries(args || {}).forEach(([sel, val]) => {
-            const el = document.querySelector(sel);
-            if (el && 'value' in el) {
-              el.value = String(val);
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-            }
-          });
-          send('autofilled', { fields: Object.keys(args || {}) });
-        } catch (e) { send('error', { what: 'fill', message: String(e) }); }
-      }
-
-      if (command === 'click') {
-        try {
-          const el = document.querySelector(args?.selector);
-          if (el && el instanceof HTMLElement) {
-            el.click();
-            send('clicked', { selector: args.selector });
-          } else {
-            send('error', { what:'click', message:'selector not found' });
-          }
-        } catch (e) { send('error', { what: 'click', message: String(e) }); }
-      }
-
-      if (command === 'assertText') {
-        try {
-          const el = document.querySelector(args?.selector);
-          const ok = !!el && (el.textContent || '').includes(args?.includes || '');
-          if (ev.ports && ev.ports[0]) { ev.ports[0].postMessage({ ok }); }
-          send('assert_result', { selector: args?.selector, includes: args?.includes, ok });
-        } catch (e) { send('error', { what:'assertText', message:String(e) }); }
-      }
-    });
-  })();`
-  if (rawHtml.includes('</body>')) return rawHtml.replace('</body>', `<script>${AGENT}</script></body>`)
-  return `${rawHtml}<script>${AGENT}</script>`
 }
